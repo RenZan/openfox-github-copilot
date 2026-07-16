@@ -77,27 +77,44 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       const access = await this.auth.getAccessContext(context.credentialRef)
       const model = context.model || 'gpt-4o'
 
-      const body = {
-        model,
-        messages: request.messages.map((m: LLMMessage) => ({
+      const convertMessage = (m: LLMMessage) => {
+        const base: Record<string, unknown> = {
           role: m.role,
-          content: m.content,
-          ...(m.name && { name: m.name }),
-        })),
+          content: m.content === '' ? null : m.content,
+        }
+        if (m.role === 'assistant' && m.toolCalls?.length) {
+          base.tool_calls = m.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          }))
+        }
+        if (m.role === 'tool' && m.toolCallId) {
+          base.tool_call_id = m.toolCallId
+        }
+        if (m.name) base.name = m.name
+        return base
+      }
+
+      const body: Record<string, unknown> = {
+        model,
+        messages: request.messages.map(convertMessage),
         stream: true,
         temperature: request.temperature,
         max_tokens: request.maxTokens,
-        ...(request.tools && request.tools.length > 0 && {
-          tools: request.tools.map((t: LLMToolDefinition) => ({
-            type: 'function',
-            function: {
-              name: t.function.name,
-              description: t.function.description,
-              parameters: t.function.parameters,
-            },
-          })),
-        }),
       }
+      if (request.tools?.length) {
+        body.tools = request.tools.map((t: LLMToolDefinition) => ({
+          type: 'function',
+          function: {
+            name: t.function.name,
+            description: t.function.description,
+            parameters: t.function.parameters,
+          },
+        }))
+      }
+      if (request.toolChoice) body.tool_choice = request.toolChoice
+      if (request.reasoningEffort) body.reasoning_effort = request.reasoningEffort
 
       const res = await fetch('https://api.githubcopilot.com/chat/completions', {
         method: 'POST',

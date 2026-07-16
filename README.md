@@ -62,6 +62,10 @@ Build the plugin before starting OpenFox:
 npm install && npm run build
 ```
 
+## Current version
+
+1.0.1
+
 ## Use
 
 Restart OpenFox, open the onboarding page, select **GitHub Copilot**, and connect your account.

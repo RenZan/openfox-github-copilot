@@ -8,16 +8,30 @@ The plugin adds GitHub account authentication, model discovery, and the transpor
 
 ## Install
 
-### macOS / Linux
+Install the package directly into the OpenFox plugin directory, install its runtime dependencies, then restart OpenFox.
+
+### macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JamesDAdams/openfox-github-copilot/main/install.sh | bash
+PLUGIN_DIR="$HOME/Library/Application Support/openfox/plugins/openfox-github-copilot" && mkdir -p "$PLUGIN_DIR" && npx --yes pacote extract openfox-github-copilot "$PLUGIN_DIR" && npm install --omit=dev --prefix "$PLUGIN_DIR"
 ```
 
-For OpenFox dev mode (`OPENFOX_DEV=true`):
+Plugin directory:
+
+```text
+~/Library/Application Support/openfox/plugins/openfox-github-copilot
+```
+
+### Linux
 
 ```bash
-OPENFOX_DEV=true curl -fsSL https://raw.githubusercontent.com/JamesDAdams/openfox-github-copilot/main/install.sh | bash
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/openfox/plugins/openfox-github-copilot" && mkdir -p "$PLUGIN_DIR" && npx --yes pacote extract openfox-github-copilot "$PLUGIN_DIR" && npm install --omit=dev --prefix "$PLUGIN_DIR"
+```
+
+Plugin directory:
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/openfox/plugins/openfox-github-copilot
 ```
 
 ### Windows PowerShell
@@ -26,15 +40,11 @@ OPENFOX_DEV=true curl -fsSL https://raw.githubusercontent.com/JamesDAdams/openfo
 $dir = Join-Path $env:APPDATA 'openfox\plugins\openfox-github-copilot'; New-Item -ItemType Directory -Force $dir | Out-Null; npx --yes pacote extract openfox-github-copilot $dir; npm install --omit=dev --prefix $dir
 ```
 
-### Manual install
+Plugin directory:
 
-| OS | Plugin directory |
-|----|-----------------|
-| macOS | `~/Library/Application Support/openfox/plugins/openfox-github-copilot` |
-| Linux | `${XDG_CONFIG_HOME:-~/.config}/openfox/plugins/openfox-github-copilot` |
-| Windows | `%APPDATA%\openfox\plugins\openfox-github-copilot` |
-
-Install the package directly into the plugin directory, install its runtime dependencies, then restart OpenFox.
+```text
+%APPDATA%\openfox\plugins\openfox-github-copilot
+```
 
 ## Development mode
 

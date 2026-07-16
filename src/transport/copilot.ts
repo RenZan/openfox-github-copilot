@@ -12,13 +12,71 @@ import type {
 import { GitHubCopilotAuthAdapter } from '../auth/github-browser-auth.js'
 import { getDefaultModels } from '../catalog/models-default.js'
 
+const GITHUB_CATALOG_API = 'https://models.github.ai/catalog/models'
+
+function mergeModels(defaults: ModelConfig[], apiModels: ModelConfig[]): ModelConfig[] {
+  const seen = new Set<string>()
+  const merged: ModelConfig[] = []
+
+  for (const m of apiModels) {
+    seen.add(m.id)
+    merged.push(m)
+  }
+
+  for (const m of defaults) {
+    if (!seen.has(m.id)) merged.push(m)
+  }
+
+  return merged
+}
+
 export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
   readonly id = 'github-copilot-transport'
 
   constructor(private readonly auth: GitHubCopilotAuthAdapter) {}
 
+  private async fetchGitHubCatalog(credentialRef: string): Promise<ModelConfig[]> {
+    try {
+      const oauthToken = await this.auth.getOAuthToken(credentialRef)
+      const res = await fetch(GITHUB_CATALOG_API, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${oauthToken}`,
+          'X-GitHub-Api-Version': '2026-03-10',
+          'User-Agent': 'OpenFox',
+        },
+        signal: AbortSignal.timeout(5000),
+      })
+
+      if (!res.ok) return []
+
+      const data = await res.json() as Array<{
+        id: string
+        name?: string
+        limits?: { max_input_tokens?: number }
+        capabilities?: string[]
+      }>
+
+      if (!Array.isArray(data)) return []
+
+      return data.map((m) => ({
+        id: m.id.includes('/') ? m.id.slice(m.id.indexOf('/') + 1) : m.id,
+        name: m.name ?? m.id,
+        contextWindow: m.limits?.max_input_tokens ?? 200000,
+        source: 'backend' as const,
+      }))
+    } catch {
+      return []
+    }
+  }
+
   async listModels(context: ProviderRequestContext): Promise<ModelConfig[]> {
-    if (!context.credentialRef) return getDefaultModels()
+    const defaults = getDefaultModels()
+
+    if (!context.credentialRef) return defaults
+
+    const catalog = await this.fetchGitHubCatalog(context.credentialRef)
+    if (catalog.length > 0) return mergeModels(defaults, catalog)
 
     try {
       const access = await this.auth.getAccessContext(context.credentialRef)
@@ -26,35 +84,36 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         headers: { ...access.headers },
       })
 
-      if (!res.ok) return getDefaultModels()
+      if (res.ok) {
+        const data = await res.json() as {
+          data?: Array<{
+            id: string
+            name?: string
+            capabilities?: { type?: string }
+            limits?: { max_inputs_tokens?: number }
+          }>
+        }
 
-      const data = await res.json() as {
-        data?: Array<{
-          id: string
-          name?: string
-          capabilities?: { type?: string }
-          limits?: { max_inputs_tokens?: number }
-        }>
-      }
-
-      if (!data.data || !Array.isArray(data.data)) return getDefaultModels()
-
-      const models: ModelConfig[] = []
-      for (const m of data.data) {
-        if (m.capabilities?.type === 'chat') {
-          models.push({
-            id: m.id,
-            name: m.name || m.id,
-            contextWindow: m.limits?.max_inputs_tokens || 128000,
-            source: 'backend',
-          })
+        if (data.data && Array.isArray(data.data)) {
+          const models: ModelConfig[] = []
+          for (const m of data.data) {
+            if (m.capabilities?.type === 'chat') {
+              models.push({
+                id: m.id,
+                name: m.name || m.id,
+                contextWindow: m.limits?.max_inputs_tokens || 128000,
+                source: 'backend',
+              })
+            }
+          }
+          if (models.length > 0) return mergeModels(defaults, models)
         }
       }
-
-      return models.length > 0 ? models : getDefaultModels()
     } catch {
-      return getDefaultModels()
+      // fallback to defaults
     }
+
+    return defaults
   }
 
   async complete(request: LLMCompletionRequest, context: ProviderRequestContext): Promise<LLMCompletionResponse> {

@@ -99,6 +99,12 @@ export class GitHubCopilotAuthAdapter implements ProviderAuthAdapter {
     }
   }
 
+  async getOAuthToken(credentialRef: string): Promise<string> {
+    const credential = await this.credentials.get(credentialRef) as { oauthToken?: string } | undefined
+    if (!credential?.oauthToken) throw new Error('OAuth token not found')
+    return credential.oauthToken
+  }
+
   async logout(credentialRef: string): Promise<void> {
     await this.credentials.delete(credentialRef)
   }

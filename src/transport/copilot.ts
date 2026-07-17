@@ -1,6 +1,7 @@
 import type {
   ProviderTransportAdapter,
   ProviderRequestContext,
+  ProviderAccessContext,
   ModelConfig,
   LLMCompletionRequest,
   LLMCompletionResponse,
@@ -75,47 +76,65 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
 
     if (!context.credentialRef) return defaults
 
-    const catalog = await this.fetchGitHubCatalog(context.credentialRef)
-    if (catalog.length > 0) return mergeModels(defaults, catalog)
-
+    let access: ProviderAccessContext
     try {
-      const access = await this.auth.getAccessContext(context.credentialRef)
-      const res = await fetch('https://api.githubcopilot.com/models', {
-        headers: { ...access.headers },
-      })
-
-      if (res.ok) {
-        const data = await res.json() as {
-          data?: Array<{
-            id: string
-            name?: string
-            capabilities?: {
-              type?: string
-              limits?: { max_prompt_tokens?: number; max_context_window_tokens?: number }
-            }
-          }>
-        }
-
-        if (data.data && Array.isArray(data.data)) {
-          const models: ModelConfig[] = []
-          for (const m of data.data) {
-            if (m.capabilities?.type === 'chat') {
-              models.push({
-                id: m.id,
-                name: m.name || m.id,
-                contextWindow: m.capabilities?.limits?.max_prompt_tokens ?? m.capabilities?.limits?.max_context_window_tokens ?? 128000,
-                source: 'backend',
-              })
-            }
-          }
-          if (models.length > 0) return mergeModels(defaults, models)
-        }
-      }
+      access = await this.auth.getAccessContext(context.credentialRef)
     } catch {
-      // fallback to defaults
+      return defaults
+    }
+
+    const copilotModels = await this.fetchCopilotModels(access.headers ?? {})
+
+    if (copilotModels.length > 0) {
+      return mergeModels(defaults, copilotModels)
+    }
+
+    const catalog = await this.fetchGitHubCatalog(context.credentialRef)
+    if (catalog.length > 0) {
+      return mergeModels(defaults, catalog)
     }
 
     return defaults
+  }
+
+  private async fetchCopilotModels(headers: Record<string, string>): Promise<ModelConfig[]> {
+    try {
+      const res = await fetch('https://api.githubcopilot.com/models', {
+        headers: { ...headers },
+        signal: AbortSignal.timeout(5000),
+      })
+
+      if (!res.ok) return []
+
+      const data = await res.json() as {
+        data?: Array<{
+          id: string
+          name?: string
+          capabilities?: {
+            type?: string
+            limits?: { max_prompt_tokens?: number; max_context_window_tokens?: number }
+          }
+        }>
+      }
+
+      if (!data.data || !Array.isArray(data.data)) return []
+
+      const models: ModelConfig[] = []
+      for (const m of data.data) {
+        if (m.capabilities?.type !== 'chat') continue
+        models.push({
+          id: m.id,
+          name: m.name || m.id,
+          contextWindow: m.capabilities?.limits?.max_prompt_tokens
+            ?? m.capabilities?.limits?.max_context_window_tokens
+            ?? 128000,
+          source: 'backend',
+        })
+      }
+      return models
+    } catch {
+      return []
+    }
   }
 
   async complete(request: LLMCompletionRequest, context: ProviderRequestContext): Promise<LLMCompletionResponse> {

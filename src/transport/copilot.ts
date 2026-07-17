@@ -15,6 +15,21 @@ import { getDefaultModels } from '../catalog/models-default.js'
 
 const GITHUB_CATALOG_API = 'https://models.github.ai/catalog/models'
 
+const LOOKAROUND_RE = /\(\?[=!<]/
+
+function sanitizeSchema(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(sanitizeSchema)
+  if (obj && typeof obj === 'object') {
+    const result: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (k === 'pattern' && typeof v === 'string' && LOOKAROUND_RE.test(v)) continue
+      result[k] = sanitizeSchema(v)
+    }
+    return result
+  }
+  return obj
+}
+
 function mergeModels(defaults: ModelConfig[], apiModels: ModelConfig[]): ModelConfig[] {
   const seen = new Set<string>()
   const merged: ModelConfig[] = []
@@ -431,7 +446,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         type: 'function',
         name: t.function.name,
         description: t.function.description,
-        parameters: t.function.parameters,
+        parameters: sanitizeSchema(t.function.parameters),
       }))
     }
     if (request.toolChoice) body.tool_choice = request.toolChoice

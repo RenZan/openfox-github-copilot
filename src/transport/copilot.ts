@@ -114,6 +114,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
   }
 
   private async fetchCopilotModels(headers: Record<string, string>): Promise<ModelConfig[]> {
+    this.modelEndpoints.clear()
     try {
       const res = await fetch('https://api.githubcopilot.com/models', {
         headers: { ...headers },
@@ -288,7 +289,63 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     try {
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        if (done) {
+          if (buffer.trim()) {
+            buffer = buffer.trim()
+            if (buffer.startsWith('data: ')) {
+              const dataStr = buffer.slice(6)
+              if (dataStr !== '[DONE]') {
+                try {
+                  const parsed = JSON.parse(dataStr) as {
+                    id?: string
+                    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+                    choices?: Array<{
+                      finish_reason?: string | null
+                      delta?: {
+                        content?: string | null
+                        reasoning_content?: string | null
+                        tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>
+                      }
+                    }>
+                  }
+                  if (parsed.id) responseId = parsed.id
+                  if (parsed.usage) {
+                    usage = { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, totalTokens: parsed.usage.total_tokens ?? 0 }
+                  }
+                  const choice = parsed.choices?.[0]
+                  if (choice?.finish_reason) {
+                    switch (choice.finish_reason) {
+                      case 'stop': finishReason = 'stop'; break
+                      case 'tool_calls': finishReason = 'tool_calls'; break
+                      case 'length': finishReason = 'length'; break
+                      case 'content_filter': finishReason = 'content_filter'; break
+                    }
+                  }
+                  const delta = choice?.delta as any
+                  if (delta) {
+                    const thinking = delta.reasoning_content || delta.reasoning || delta.thinking
+                    if (thinking) { fullThinking += thinking; yield { type: 'thinking_delta', content: thinking } }
+                    if (delta.content) { fullContent += delta.content; yield { type: 'text_delta', content: delta.content } }
+                    if (delta.tool_calls) {
+                      for (const tc of delta.tool_calls) {
+                        const existing = toolCalls.get(tc.index)
+                        if (!existing) {
+                          toolCalls.set(tc.index, { id: tc.id ?? '', name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' })
+                        } else {
+                          if (tc.id) existing.id = tc.id
+                          if (tc.function?.name) existing.name += tc.function.name
+                          if (tc.function?.arguments) existing.arguments += tc.function.arguments
+                        }
+                        yield { type: 'tool_call_delta', index: tc.index, ...(tc.id ? { id: tc.id } : {}), ...(tc.function?.name ? { name: tc.function.name } : {}), ...(tc.function?.arguments ? { arguments: tc.function.arguments } : {}) }
+                      }
+                    }
+                  }
+                } catch {}
+              }
+            }
+          }
+          break
+        }
 
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
@@ -429,7 +486,10 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
   ): AsyncIterable<LLMStreamEvent> {
     const body: Record<string, unknown> = {
       model,
-      input: request.messages.map((m) => {
+      input: request.messages.filter((m) => {
+        if (m.role === 'assistant' && !m.content && m.toolCalls?.length) return false
+        return true
+      }).map((m) => {
         const msg: Record<string, unknown> = {
           role: m.role === 'tool' ? 'user' : m.role,
           content: m.content === '' ? '' : m.content,
@@ -506,7 +566,19 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     try {
       while (true) {
         const { done, value } = await reader.read()
-        if (done) { yield* applyResults(flushEvents()); break }
+        if (done) {
+          if (buffer.trim()) {
+            const remaining = buffer.trimEnd()
+            if (remaining.startsWith('event: ')) {
+              currentEvent = remaining.slice(7)
+              currentData = ''
+            } else if (remaining.startsWith('data: ')) {
+              currentData += remaining.slice(6)
+            }
+          }
+          yield* applyResults(flushEvents())
+          break
+        }
 
         buffer += decoder.decode(value, { stream: true })
 

@@ -295,3 +295,331 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
     expect(mockFetch).not.toHaveBeenCalled()
   })
 })
+
+describe('GitHubCopilotTransportAdapter — items from spec', () => {
+  let adapter: GitHubCopilotTransportAdapter
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockAuth.getOAuthToken.mockResolvedValue('test-oauth-token')
+    adapter = new GitHubCopilotTransportAdapter(mockAuth as any)
+  })
+
+  afterEach(() => {
+    mockFetch.mockReset()
+  })
+
+  // P1: Dynamic routing — models with supported_endpoints=['/responses'] without /chat/completions routed to /responses
+  it('P1: /models returns a responses-only model — requestBody.endpoint is set to /responses', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'responses-only-model',
+            supported_endpoints: ['/responses'],
+            capabilities: { type: 'chat', limits: { max_prompt_tokens: 64000 } },
+          },
+        ],
+      }),
+    })
+    const models = await adapter.listModels(makeContext('cred'))
+    const m = models.find(x => x.id === 'responses-only-model')
+    expect(m).toBeDefined()
+    expect(m?.requestBody?.endpoint).toBe('/responses')
+  })
+
+  it('P1: /models returns a chat+responses model — default endpoint used (no requestBody override)', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'dual-model',
+            supported_endpoints: ['/chat/completions', '/responses'],
+            capabilities: { type: 'chat', limits: { max_prompt_tokens: 64000 } },
+          },
+        ],
+      }),
+    })
+    const models = await adapter.listModels(makeContext('cred'))
+    const m = models.find(x => x.id === 'dual-model')
+    expect(m).toBeDefined()
+    expect(m?.requestBody?.endpoint).toBeUndefined()
+  })
+
+  it('P1: /models returns a chat-only model — no requestBody override', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'chat-only-model',
+            supported_endpoints: ['/chat/completions'],
+            capabilities: { type: 'chat', limits: { max_prompt_tokens: 64000 } },
+          },
+        ],
+      }),
+    })
+    const models = await adapter.listModels(makeContext('cred'))
+    const m = models.find(x => x.id === 'chat-only-model')
+    expect(m).toBeDefined()
+    expect(m?.requestBody?.endpoint).toBeUndefined()
+  })
+
+  // P2: GitHub Catalog models get requestBody.endpoint='/chat/completions' by default
+  it('P2: GitHub Catalog models receive endpoint=/chat/completions by default', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        { id: 'gpt-5-mini', limits: { max_input_tokens: 256000 } },
+      ],
+    })
+    const models = await adapter.listModels(makeContext('cred'))
+    const gpt5 = models.find(m => m.id === 'gpt-5-mini')
+    expect(gpt5?.requestBody?.endpoint).toBe('/chat/completions')
+    expect(gpt5?.source).toBe('backend')
+  })
+
+  // P2: Fallback model 'gpt-4o' replaced by 'gpt-5-mini'
+  it('P2: stream() uses gpt-5-mini when no model is specified (fallback)', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'))
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal } as any
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const fetchCall = mockFetch.mock.calls.find((c: any) => c[0] === 'https://api.githubcopilot.com/chat/completions')
+    expect(fetchCall).toBeDefined()
+    const body = JSON.parse(fetchCall![1].body)
+    expect(body.model).toBe('gpt-5-mini')
+  })
+
+  // P1: Multi-turn tool calls /responses — tool responses sent as user role, tool_calls omitted
+  it('P1: streamResponses sends tool responses as user role and filters empty assistant tool-call msgs', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          controller.enqueue(encoder.encode(
+            'event: response.created\ndata: {"response":{"id":"resp-1"}}\n\n' +
+            'event: response.output_text.delta\ndata: {"delta":"Hello"}\n\n' +
+            'event: response.completed\ndata: {"response":{"id":"resp-1","usage":{"input_tokens":10,"output_tokens":5}}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal, model: 'gpt-5.4-mini' } as any
+    const request = {
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'tc1', name: 'get_weather', arguments: { city: 'Paris' } }] },
+        { role: 'tool', content: '20°C', toolCallId: 'tc1' },
+      ],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const fetchCall = mockFetch.mock.calls.find((c: any) => c[0] === 'https://api.githubcopilot.com/responses')
+    expect(fetchCall).toBeDefined()
+    const body = JSON.parse(fetchCall![1].body)
+
+    // Empty assistant tool-call msg filtered out
+    expect(body.input.find((m: any) => m.role === 'assistant')).toBeUndefined()
+
+    // Tool result mapped to user
+    const toolMsg = body.input.find((m: any) => (m.role === 'user' && m.content === '20°C'))
+    expect(toolMsg).toBeDefined()
+  })
+
+  // P1: Flush EOF — last event has data line with trailing \n but no \n\n (empty line)
+  //      This means data is parsed into currentData, but never flushed by an empty line
+  it('P1: streamResponses flushes remaining event on EOF (data line parsed, no empty line terminator)', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          // No trailing \n\n after the last data line — only \n
+          // This way the data line is parsed into currentData but
+          // the empty line trigger never fires; EOF flush must pick it up
+          controller.enqueue(encoder.encode(
+            'event: response.created\ndata: {"response":{"id":"resp-2"}}\n\n' +
+            'event: response.output_text.delta\ndata: {"delta":"Hello from flush"}\n\n' +
+            'event: response.completed\ndata: {"response":{"id":"resp-2","usage":{"input_tokens":5,"output_tokens":3}}}\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal, model: 'gpt-5.4-mini' } as any
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    expect(events.some(e => e.type === 'text_delta' && e.content === 'Hello from flush')).toBe(true)
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent).toBeDefined()
+    expect(doneEvent.response.id).toBe('resp-2')
+    expect(doneEvent.response.usage).toEqual({ promptTokens: 5, completionTokens: 3, totalTokens: 8 })
+  })
+
+  // P2: Usage non-gonflé — input_tokens/output_tokens prioritized over token_details
+  it('P2: processResponsesEvent prioritizes input_tokens over token_details', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          controller.enqueue(encoder.encode(
+            'event: response.created\ndata: {"response":{"id":"resp-3"}}\n\n' +
+            'event: response.output_text.delta\ndata: {"delta":"world"}\n\n' +
+            'event: response.completed\ndata: {"response":{"id":"resp-3","usage":{"input_tokens":99,"output_tokens":88,"token_details":[{"token_type":"input","token_count":1},{"token_type":"output","token_count":2}]}}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal, model: 'gpt-5.4-mini' } as any
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent?.response.usage.promptTokens).toBe(99)
+    expect(doneEvent?.response.usage.completionTokens).toBe(88)
+  })
+
+  it('P2: processResponsesEvent falls back to token_details when input_tokens missing', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          controller.enqueue(encoder.encode(
+            'event: response.created\ndata: {"response":{"id":"resp-4"}}\n\n' +
+            'event: response.output_text.delta\ndata: {"delta":"fallback"}\n\n' +
+            'event: response.completed\ndata: {"response":{"id":"resp-4","usage":{"token_details":[{"token_type":"input","token_count":7},{"token_type":"output","token_count":3}]}}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal, model: 'gpt-5.4-mini' } as any
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent?.response.usage.promptTokens).toBe(7)
+    expect(doneEvent?.response.usage.completionTokens).toBe(3)
+  })
+
+  // P1: Tool calls multi-round — multiple rounds of tool calls
+  it('P1: streamResponses handles multi-round tool calls (function_call + arguments delta)', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          controller.enqueue(encoder.encode(
+            'event: response.created\ndata: {"response":{"id":"resp-tc1"}}\n\n' +
+            'event: response.output_item.added\ndata: {"item":{"id":"fc1","type":"function_call","name":"get_weather"}}\n\n' +
+            'event: response.function_call_arguments.delta\ndata: {"delta":"{\\"city\\":\\""}\n\n' +
+            'event: response.function_call_arguments.delta\ndata: {"delta":"Paris\\"}"}\n\n' +
+            'event: response.output_item.done\ndata: {"item":{"id":"fc1","type":"function_call","name":"get_weather","arguments":"{\\"city\\":\\"Paris\\"}"}}\n\n' +
+            'event: response.completed\ndata: {"response":{"id":"resp-tc1","usage":{"input_tokens":10,"output_tokens":20}}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal, model: 'gpt-5.4-mini' } as any
+    const request = {
+      messages: [{ role: 'user', content: 'weather in Paris?' }],
+      tools: [
+        {
+          type: 'function' as const,
+          function: { name: 'get_weather', description: 'Get weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } },
+        },
+      ],
+      toolChoice: 'auto' as const,
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent).toBeDefined()
+    expect(doneEvent.response.toolCalls).toBeDefined()
+    expect(doneEvent.response.toolCalls.length).toBe(1)
+    expect(doneEvent.response.toolCalls[0].name).toBe('get_weather')
+    expect(doneEvent.response.toolCalls[0].arguments).toEqual({ city: 'Paris' })
+    expect(doneEvent.response.finishReason).toBe('tool_calls')
+  })
+})

@@ -507,13 +507,19 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
                   yield { type: 'text_delta', content: data.delta }
                 }
               } else if (currentEvent === 'response.completed') {
-                if (data.copilot_usage) {
-                  const tokens = data.copilot_usage.token_details || []
+                const resp = data.response || data
+                const usageData = resp.usage || data.copilot_usage || {}
+                if (usageData.input_tokens !== undefined || usageData.token_details) {
+                  const tokens = usageData.token_details || []
+                  let pt = usageData.input_tokens ?? 0
+                  let ct = usageData.output_tokens ?? 0
                   for (const t of tokens) {
-                    if (t.token_type === 'input') usage.promptTokens += t.token_count || 0
-                    if (t.token_type === 'output') usage.completionTokens += t.token_count || 0
+                    if (t.token_type === 'input' || t.token_type === 'prompt') pt += t.token_count || 0
+                    if (t.token_type === 'output' || t.token_type === 'completion') ct += t.token_count || 0
                   }
-                  usage.totalTokens = usage.promptTokens + usage.completionTokens
+                  usage.promptTokens = pt
+                  usage.completionTokens = ct
+                  usage.totalTokens = pt + ct
                 }
               }
             } catch {

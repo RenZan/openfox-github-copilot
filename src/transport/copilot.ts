@@ -80,6 +80,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         name: m.name ?? m.id,
         contextWindow: m.limits?.max_input_tokens ?? 200000,
         source: 'backend' as const,
+        requestBody: { endpoint: '/chat/completions' },
       }))
     } catch {
       return []
@@ -143,6 +144,10 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         const hasResponses = endpoints.includes('/responses')
         if (!hasChat && !hasResponses) continue
 
+        if (!hasChat && hasResponses) {
+          this.modelEndpoints.set(m.id, '/responses')
+        }
+
         const mc: ModelConfig = {
           id: m.id,
           name: m.name || m.id,
@@ -180,7 +185,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
 
     try {
       const access = await this.auth.getAccessContext(context.credentialRef)
-      const model = context.model || 'gpt-4o'
+      const model = context.model || 'gpt-5-mini'
       const endpoint = this.getModelEndpoint(model)
 
       if (endpoint === '/responses') {
@@ -485,7 +490,14 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     try {
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        if (done) {
+          const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
+          if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
+          if (ev?.toolDelta) yield ev.toolDelta as any
+          if (ev?.id) responseId = ev.id
+          if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
+          break
+        }
 
         buffer += decoder.decode(value, { stream: true })
 
@@ -495,21 +507,21 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           buffer = buffer.slice(idx + 1)
 
           if (line.startsWith('event: ')) {
-            const events = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
-            if (events?.delta) { fullContent += events.delta; yield { type: 'text_delta', content: events.delta } }
-            if (events?.toolDelta) yield events.toolDelta as any
-            if (events?.id) responseId = events.id
-            if (events?.pendingState) { pendingToolId = events.pendingState.id; pendingToolName = events.pendingState.name; pendingToolArgs = events.pendingState.args; toolCallIdx = events.pendingState.idx }
+            const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
+            if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
+            if (ev?.toolDelta) yield ev.toolDelta as any
+            if (ev?.id) responseId = ev.id
+            if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
             currentEvent = line.slice(7)
             currentData = ''
           } else if (line.startsWith('data: ')) {
             currentData += line.slice(6)
           } else if (line === '') {
-            const events = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
-            if (events?.delta) { fullContent += events.delta; yield { type: 'text_delta', content: events.delta } }
-            if (events?.toolDelta) yield events.toolDelta as any
-            if (events?.id) responseId = events.id
-            if (events?.pendingState) { pendingToolId = events.pendingState.id; pendingToolName = events.pendingState.name; pendingToolArgs = events.pendingState.args; toolCallIdx = events.pendingState.idx }
+            const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
+            if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
+            if (ev?.toolDelta) yield ev.toolDelta as any
+            if (ev?.id) responseId = ev.id
+            if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
             currentEvent = ''
             currentData = ''
           }
@@ -591,10 +603,13 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       } else if (event === 'response.completed') {
         const resp = d.response || d
         const ud = resp.usage || d.copilot_usage || {}
-        if (ud.input_tokens !== undefined || ud.token_details) {
+        if (ud.input_tokens !== undefined) {
+          usage.promptTokens = ud.input_tokens ?? 0
+          usage.completionTokens = ud.output_tokens ?? 0
+          usage.totalTokens = (ud.input_tokens ?? 0) + (ud.output_tokens ?? 0)
+        } else if (ud.token_details) {
           const tokens = ud.token_details || []
-          let pt = ud.input_tokens ?? 0
-          let ct = ud.output_tokens ?? 0
+          let pt = 0; let ct = 0
           for (const t of tokens) {
             if (t.token_type === 'input' || t.token_type === 'prompt') pt += t.token_count || 0
             if (t.token_type === 'output' || t.token_type === 'completion') ct += t.token_count || 0

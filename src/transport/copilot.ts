@@ -89,8 +89,10 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           data?: Array<{
             id: string
             name?: string
-            capabilities?: { type?: string }
-            limits?: { max_inputs_tokens?: number }
+            capabilities?: {
+              type?: string
+              limits?: { max_prompt_tokens?: number; max_context_window_tokens?: number }
+            }
           }>
         }
 
@@ -101,7 +103,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
               models.push({
                 id: m.id,
                 name: m.name || m.id,
-                contextWindow: m.limits?.max_inputs_tokens || 128000,
+                contextWindow: m.capabilities?.limits?.max_prompt_tokens ?? m.capabilities?.limits?.max_context_window_tokens ?? 128000,
                 source: 'backend',
               })
             }

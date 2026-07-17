@@ -458,10 +458,10 @@ describe('GitHubCopilotTransportAdapter — items from spec', () => {
 
     expect(body.input.find((m: any) => m.role === 'assistant')).toBeUndefined()
 
-    const toolItem = body.input.find((m: any) => m.type === 'function_call_output')
-    expect(toolItem).toBeDefined()
-    expect(toolItem.call_id).toBe('tc1')
-    expect(toolItem.output).toBe('20°C')
+    const toolMsg = body.input.find((m: any) => m.role === 'user' && m.content.includes('[Tool result for'))
+    expect(toolMsg).toBeDefined()
+    expect(toolMsg.content).toContain('tc1')
+    expect(toolMsg.content).toContain('20°C')
   })
 
   // P1: Flush EOF — last event has data line with trailing \n but no \n\n (empty line)

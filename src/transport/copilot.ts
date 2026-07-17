@@ -426,11 +426,10 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       model,
       input: request.messages.map((m) => {
         const msg: Record<string, unknown> = {
-          role: m.role,
+          role: m.role === 'tool' ? 'user' : m.role,
           content: m.content === '' ? '' : m.content,
         }
         if (m.name) msg.name = m.name
-        if (m.role === 'tool' && m.toolCallId) msg.tool_call_id = m.toolCallId
         return msg
       }),
       max_output_tokens: request.maxTokens ?? 100000,

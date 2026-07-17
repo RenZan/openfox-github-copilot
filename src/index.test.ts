@@ -42,9 +42,9 @@ describe('openfox-github-copilot plugin', () => {
 })
 
 describe('getDefaultModels', () => {
-  it('returns all 25 models with a positive contextWindow', () => {
+  it('returns all 21 models with a positive contextWindow', () => {
     const models = getDefaultModels()
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
     for (const m of models) {
       expect(m.contextWindow).toBeGreaterThan(0)
       expect(m.source).toBe('default')
@@ -55,16 +55,10 @@ describe('getDefaultModels', () => {
     const models = getDefaultModels()
     const byId = new Map(models.map(m => [m.id, m]))
 
-    // GPT models (real API values)
+    // Chat completion models (real API values)
     expect(byId.get('gpt-5-mini')?.contextWindow).toBe(128000)
-    expect(byId.get('gpt-5.3-codex')?.contextWindow).toBe(272000)
     expect(byId.get('gpt-5.4')?.contextWindow).toBe(272000)
-    expect(byId.get('gpt-5.4-mini')?.contextWindow).toBe(272000)
     expect(byId.get('gpt-5.4-nano')?.contextWindow).toBe(200000)
-    expect(byId.get('gpt-5.5')?.contextWindow).toBe(272000)
-    expect(byId.get('gpt-5.6-luna')?.contextWindow).toBe(200000)
-    expect(byId.get('gpt-5.6-sol')?.contextWindow).toBe(272000)
-    expect(byId.get('gpt-5.6-terra')?.contextWindow).toBe(272000)
 
     // Claude (real API values)
     expect(byId.get('claude-fable-5')?.contextWindow).toBe(200000)
@@ -77,16 +71,38 @@ describe('getDefaultModels', () => {
     expect(byId.get('claude-sonnet-4.6')?.contextWindow).toBe(200000)
     expect(byId.get('claude-sonnet-5')?.contextWindow).toBe(200000)
 
-    // Gemini (real API values)
-    expect(byId.get('gemini-2.5-pro')?.contextWindow).toBe(128000)
-    expect(byId.get('gemini-3-flash')?.contextWindow).toBe(128000)
+    // Gemini
     expect(byId.get('gemini-3.1-pro')?.contextWindow).toBe(200000)
     expect(byId.get('gemini-3.5-flash')?.contextWindow).toBe(200000)
 
-    // Others (estimated values, not returned by Copilot API)
-    expect(byId.get('mai-code-1-flash')?.contextWindow).toBe(200000)
-    expect(byId.get('raptor-mini')?.contextWindow).toBe(128000)
-    expect(byId.get('kimi-k2.7-code')?.contextWindow).toBe(128000)
+    // Trajectory compaction
+    expect(byId.get('trajectory-compaction')?.contextWindow).toBe(245760)
+
+    // Responses endpoint models
+    expect(byId.get('gpt-5.3-codex')?.contextWindow).toBe(272000)
+    expect(byId.get('gpt-5.4-mini')?.contextWindow).toBe(272000)
+    expect(byId.get('gpt-5.5')?.contextWindow).toBe(272000)
+    expect(byId.get('gpt-5.6-luna')?.contextWindow).toBe(200000)
+    expect(byId.get('gpt-5.6-sol')?.contextWindow).toBe(272000)
+    expect(byId.get('gpt-5.6-terra')?.contextWindow).toBe(272000)
+
+    // Responses models should have requestBody.endpoint
+    for (const id of ['gpt-5.3-codex', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra']) {
+      expect(byId.get(id)?.requestBody?.endpoint).toBe('/responses')
+    }
+
+    // Chat models should NOT have requestBody.endpoint
+    for (const id of ['gpt-5-mini', 'gpt-5.4', 'claude-sonnet-4.6', 'gemini-3.5-flash']) {
+      expect(byId.get(id)?.requestBody?.endpoint).toBeUndefined()
+    }
+
+    // Retired / unknown models removed
+    expect(byId.has('gpt-5.2')).toBe(false)
+    expect(byId.has('gemini-2.5-pro')).toBe(false)
+    expect(byId.has('gemini-3-flash')).toBe(false)
+    expect(byId.has('mai-code-1-flash')).toBe(false)
+    expect(byId.has('raptor-mini')).toBe(false)
+    expect(byId.has('kimi-k2.7-code')).toBe(false)
   })
 })
 
@@ -108,13 +124,13 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
 
   it('returns defaults when there is no credentialRef', async () => {
     const models = await adapter.listModels(makeContext(undefined))
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
   it('returns defaults when credentialRef is an empty string', async () => {
     const models = await adapter.listModels(makeContext(''))
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
   })
 
   it('uses /models max_prompt_tokens as the primary contextWindow', async () => {
@@ -124,6 +140,7 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
         data: [
           {
             id: 'claude-sonnet-4.5',
+            supported_endpoints: ['/chat/completions'],
             capabilities: { type: 'chat', limits: { max_prompt_tokens: 180000, max_context_window_tokens: 200000 } },
           },
         ],
@@ -142,6 +159,7 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
         data: [
           {
             id: 'gpt-5-mini',
+            supported_endpoints: ['/chat/completions'],
             capabilities: { type: 'chat', limits: { max_context_window_tokens: 400000 } },
           },
         ],
@@ -157,9 +175,9 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
       ok: true,
       json: async () => ({
         data: [
-          { id: 'm1', capabilities: { type: 'chat', limits: null } },
-          { id: 'm2', capabilities: { type: 'chat' } },
-          { id: 'm3', capabilities: { type: 'chat', limits: { max_context_window_tokens: 300000 } } },
+          { id: 'm1', supported_endpoints: ['/chat/completions'], capabilities: { type: 'chat', limits: null } },
+          { id: 'm2', supported_endpoints: ['/chat/completions'], capabilities: { type: 'chat' } },
+          { id: 'm3', supported_endpoints: ['/chat/completions'], capabilities: { type: 'chat', limits: { max_context_window_tokens: 300000 } } },
         ],
       }),
     })
@@ -174,7 +192,7 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
       ok: true,
       json: async () => ({
         data: [
-          { id: 'chat-model', capabilities: { type: 'chat', limits: { max_prompt_tokens: 64000 } } },
+          { id: 'chat-model', supported_endpoints: ['/chat/completions'], capabilities: { type: 'chat', limits: { max_prompt_tokens: 64000 } } },
           { id: 'embedding-model', capabilities: { type: 'embeddings' } },
           { id: 'no-cap-model' },
         ],
@@ -193,13 +211,14 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
         data: [
           {
             id: 'gpt-5-mini',
+            supported_endpoints: ['/chat/completions'],
             capabilities: { type: 'chat', limits: { max_prompt_tokens: 99999 } },
           },
         ],
       }),
     })
     const models = await adapter.listModels(makeContext('cred'))
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
     const gpt5 = models.find(m => m.id === 'gpt-5-mini')
     expect(gpt5?.contextWindow).toBe(99999)
     const claude = models.find(m => m.id === 'claude-sonnet-4.5')
@@ -253,7 +272,7 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
   it('falls back to defaults when both /models and GitHub Catalog fail', async () => {
     mockFetch.mockRejectedValue(new Error('network error'))
     const models = await adapter.listModels(makeContext('cred'))
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
     for (const m of models) {
       expect(m.source).toBe('default')
     }
@@ -266,13 +285,13 @@ describe('GitHubCopilotTransportAdapter.listModels', () => {
       json: async () => ({ wrapped: true }),
     })
     const models = await adapter.listModels(makeContext('cred'))
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
   })
 
   it('falls back to defaults when access context fails', async () => {
     mockAuth.getAccessContext.mockRejectedValue(new Error('no token'))
     const models = await adapter.listModels(makeContext('cred'))
-    expect(models.length).toBe(25)
+    expect(models.length).toBe(21)
     expect(mockFetch).not.toHaveBeenCalled()
   })
 })

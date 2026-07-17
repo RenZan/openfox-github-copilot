@@ -488,7 +488,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     for (const m of request.messages) {
       if (m.role === 'assistant' && !m.content && m.toolCalls?.length) continue
       if (m.role === 'tool') {
-        input.push({ type: 'function_call_output', call_id: m.toolCallId, output: m.content || '' })
+        input.push({ type: 'function_call_output', call_id: (m.toolCallId || '').slice(0, 64), output: m.content || '' })
       } else {
         const msg: any = { role: m.role, content: m.content === '' ? '' : m.content }
         if (m.name) msg.name = m.name

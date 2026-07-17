@@ -479,6 +479,8 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     let fullContent = ''
     let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
     let responseId = 'copilot-response-' + crypto.randomUUID()
+    let currentEvent = ''
+    let currentData = ''
 
     try {
       while (true) {
@@ -486,45 +488,30 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
 
-        let currentEvent = ''
-        for (const line of lines) {
-          const cleaned = line.trim()
-          if (cleaned.startsWith('event: ')) {
-            currentEvent = cleaned.slice(7)
-          } else if (cleaned.startsWith('data: ') && currentEvent) {
-            const dataStr = cleaned.slice(6)
-            try {
-              const data = JSON.parse(dataStr)
+        let idx
+        while ((idx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, idx).trimEnd()
+          buffer = buffer.slice(idx + 1)
 
-              if (currentEvent === 'response.created') {
-                if (data.response?.id) responseId = data.response.id
-              } else if (currentEvent === 'response.output_text.delta') {
-                if (data.delta) {
-                  fullContent += data.delta
-                  yield { type: 'text_delta', content: data.delta }
-                }
-              } else if (currentEvent === 'response.completed') {
-                const resp = data.response || data
-                const usageData = resp.usage || data.copilot_usage || {}
-                if (usageData.input_tokens !== undefined || usageData.token_details) {
-                  const tokens = usageData.token_details || []
-                  let pt = usageData.input_tokens ?? 0
-                  let ct = usageData.output_tokens ?? 0
-                  for (const t of tokens) {
-                    if (t.token_type === 'input' || t.token_type === 'prompt') pt += t.token_count || 0
-                    if (t.token_type === 'output' || t.token_type === 'completion') ct += t.token_count || 0
-                  }
-                  usage.promptTokens = pt
-                  usage.completionTokens = ct
-                  usage.totalTokens = pt + ct
-                }
-              }
-            } catch {
-              // Ignore parse errors
-            }
+          if (line.startsWith('event: ')) {
+            const rid = { value: '' }
+            const delta = this.handleResponsesEvent(currentEvent, currentData, rid, usage)
+            if (delta) fullContent += delta
+            if (delta) yield { type: 'text_delta', content: delta }
+            if (rid.value) responseId = rid.value
+            currentEvent = line.slice(7)
+            currentData = ''
+          } else if (line.startsWith('data: ')) {
+            currentData += line.slice(6)
+          } else if (line === '') {
+            const rid = { value: '' }
+            const delta = this.handleResponsesEvent(currentEvent, currentData, rid, usage)
+            if (delta) fullContent += delta
+            if (delta) yield { type: 'text_delta', content: delta }
+            if (rid.value) responseId = rid.value
+            currentEvent = ''
+            currentData = ''
           }
         }
       }
@@ -541,5 +528,31 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         usage,
       },
     }
+  }
+
+  private handleResponsesEvent(event: string, data: string, responseId: { value: string }, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): string | null {
+    if (!event || !data) return null
+    try {
+      const d = JSON.parse(data)
+      if (event === 'response.created') {
+        if (d.response?.id) responseId.value = d.response.id
+      } else if (event === 'response.output_text.delta') {
+        if (d.delta && typeof d.delta === 'string') return d.delta
+      } else if (event === 'response.completed') {
+        const resp = d.response || d
+        const ud = resp.usage || d.copilot_usage || {}
+        if (ud.input_tokens !== undefined || ud.token_details) {
+          const tokens = ud.token_details || []
+          let pt = ud.input_tokens ?? 0
+          let ct = ud.output_tokens ?? 0
+          for (const t of tokens) {
+            if (t.token_type === 'input' || t.token_type === 'prompt') pt += t.token_count || 0
+            if (t.token_type === 'output' || t.token_type === 'completion') ct += t.token_count || 0
+          }
+          usage.promptTokens = pt; usage.completionTokens = ct; usage.totalTokens = pt + ct
+        }
+      }
+    } catch {}
+    return null
   }
 }

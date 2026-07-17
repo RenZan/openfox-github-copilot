@@ -487,17 +487,26 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     let currentEvent = ''
     let currentData = ''
 
+    const flushEvents = (): Array<{ delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number } }> => {
+      if (!currentEvent && !currentData) return []
+      const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
+      if (!ev) return []
+      return [ev]
+    }
+
+    const applyResults = function*(events: Array<{ delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number } }>) {
+      for (const ev of events) {
+        if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
+        if (ev?.toolDelta) yield ev.toolDelta as any
+        if (ev?.id) responseId = ev.id
+        if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
+      }
+    }
+
     try {
       while (true) {
         const { done, value } = await reader.read()
-        if (done) {
-          const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
-          if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
-          if (ev?.toolDelta) yield ev.toolDelta as any
-          if (ev?.id) responseId = ev.id
-          if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
-          break
-        }
+        if (done) { yield* applyResults(flushEvents()); break }
 
         buffer += decoder.decode(value, { stream: true })
 
@@ -507,21 +516,13 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           buffer = buffer.slice(idx + 1)
 
           if (line.startsWith('event: ')) {
-            const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
-            if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
-            if (ev?.toolDelta) yield ev.toolDelta as any
-            if (ev?.id) responseId = ev.id
-            if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
+            yield* applyResults(flushEvents())
             currentEvent = line.slice(7)
             currentData = ''
           } else if (line.startsWith('data: ')) {
             currentData += line.slice(6)
           } else if (line === '') {
-            const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
-            if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
-            if (ev?.toolDelta) yield ev.toolDelta as any
-            if (ev?.id) responseId = ev.id
-            if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
+            yield* applyResults(flushEvents())
             currentEvent = ''
             currentData = ''
           }
@@ -604,9 +605,9 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         const resp = d.response || d
         const ud = resp.usage || d.copilot_usage || {}
         if (ud.input_tokens !== undefined) {
-          usage.promptTokens = ud.input_tokens ?? 0
+          usage.promptTokens = ud.input_tokens
           usage.completionTokens = ud.output_tokens ?? 0
-          usage.totalTokens = (ud.input_tokens ?? 0) + (ud.output_tokens ?? 0)
+          usage.totalTokens = usage.promptTokens + usage.completionTokens
         } else if (ud.token_details) {
           const tokens = ud.token_details || []
           let pt = 0; let ct = 0

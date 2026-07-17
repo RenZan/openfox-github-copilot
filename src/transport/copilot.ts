@@ -411,7 +411,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       model,
       input: request.messages.map((m) => ({
         role: m.role,
-        content: m.content === '' ? null : m.content,
+        content: m.content === '' ? '' : m.content,
         ...(m.name && { name: m.name }),
         ...(m.role === 'tool' && m.toolCallId && { tool_call_id: m.toolCallId }),
         ...(m.role === 'assistant' && m.toolCalls?.length && {

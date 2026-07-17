@@ -495,21 +495,21 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           buffer = buffer.slice(idx + 1)
 
           if (line.startsWith('event: ')) {
-            const rid = { value: '' }
-            const delta = this.handleResponsesEvent(currentEvent, currentData, rid, usage)
-            if (delta) fullContent += delta
-            if (delta) yield { type: 'text_delta', content: delta }
-            if (rid.value) responseId = rid.value
+            if (currentEvent && currentData) {
+              const r = this.processResponsesEvent(currentEvent, currentData, usage, fullContent)
+              if (r?.delta) { fullContent += r.delta; yield { type: 'text_delta', content: r.delta } }
+              if (r?.id) responseId = r.id
+            }
             currentEvent = line.slice(7)
             currentData = ''
           } else if (line.startsWith('data: ')) {
             currentData += line.slice(6)
           } else if (line === '') {
-            const rid = { value: '' }
-            const delta = this.handleResponsesEvent(currentEvent, currentData, rid, usage)
-            if (delta) fullContent += delta
-            if (delta) yield { type: 'text_delta', content: delta }
-            if (rid.value) responseId = rid.value
+            if (currentEvent && currentData) {
+              const r = this.processResponsesEvent(currentEvent, currentData, usage, fullContent)
+              if (r?.delta) { fullContent += r.delta; yield { type: 'text_delta', content: r.delta } }
+              if (r?.id) responseId = r.id
+            }
             currentEvent = ''
             currentData = ''
           }
@@ -530,14 +530,14 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     }
   }
 
-  private handleResponsesEvent(event: string, data: string, responseId: { value: string }, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): string | null {
+  private processResponsesEvent(event: string, data: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }, fullContent: string): { delta?: string; id?: string } | null {
     if (!event || !data) return null
     try {
       const d = JSON.parse(data)
       if (event === 'response.created') {
-        if (d.response?.id) responseId.value = d.response.id
+        if (d.response?.id) return { id: d.response.id }
       } else if (event === 'response.output_text.delta') {
-        if (d.delta && typeof d.delta === 'string') return d.delta
+        if (d.delta && typeof d.delta === 'string') return { delta: d.delta }
       } else if (event === 'response.completed') {
         const resp = d.response || d
         const ud = resp.usage || d.copilot_usage || {}
@@ -550,6 +550,17 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
             if (t.token_type === 'output' || t.token_type === 'completion') ct += t.token_count || 0
           }
           usage.promptTokens = pt; usage.completionTokens = ct; usage.totalTokens = pt + ct
+        }
+        if (!fullContent && resp.output && Array.isArray(resp.output)) {
+          const texts: string[] = []
+          for (const item of resp.output) {
+            if (item.content && Array.isArray(item.content)) {
+              for (const c of item.content) {
+                if (c.type === 'output_text' && c.text) texts.push(c.text)
+              }
+            }
+          }
+          if (texts.length > 0) return { delta: texts.join('') }
         }
       }
     } catch {}

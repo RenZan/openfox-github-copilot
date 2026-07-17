@@ -429,11 +429,9 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     if (request.tools?.length) {
       body.tools = request.tools.map((t: LLMToolDefinition) => ({
         type: 'function',
-        function: {
-          name: t.function.name,
-          description: t.function.description,
-          parameters: t.function.parameters,
-        },
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
       }))
     }
     if (request.toolChoice) body.tool_choice = request.toolChoice

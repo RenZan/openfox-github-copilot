@@ -15,7 +15,7 @@ import { getDefaultModels } from '../catalog/models-default.js'
 
 const GITHUB_CATALOG_API = 'https://models.github.ai/catalog/models'
 
-const LOOKAROUND_RE = /\(\?[=!<]/
+const LOOKAROUND_RE = /\(\?[=!]|\(\?<[=!]/
 
 function sanitizeSchema(obj: unknown): unknown {
   if (Array.isArray(obj)) return obj.map(sanitizeSchema)
@@ -549,19 +549,22 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     let currentEvent = ''
     let currentData = ''
 
-    const flushEvents = (): Array<{ delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number } }> => {
+    type EventResult = { delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number }; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }
+
+    const flushEvents = (): EventResult[] => {
       if (!currentEvent && !currentData) return []
-      const ev = this.processResponsesEvent(currentEvent, currentData, usage, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
+      const ev = this.processResponsesEvent(currentEvent, currentData, fullContent, toolCalls, { pendingToolId, pendingToolName, pendingToolArgs, toolCallIdx })
       if (!ev) return []
       return [ev]
     }
 
-    const applyResults = function*(events: Array<{ delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number } }>) {
+    const applyResults = function*(events: EventResult[]) {
       for (const ev of events) {
         if (ev?.delta) { fullContent += ev.delta; yield { type: 'text_delta', content: ev.delta } }
         if (ev?.toolDelta) yield ev.toolDelta as any
         if (ev?.id) responseId = ev.id
         if (ev?.pendingState) { pendingToolId = ev.pendingState.id; pendingToolName = ev.pendingState.name; pendingToolArgs = ev.pendingState.args; toolCallIdx = ev.pendingState.idx }
+        if (ev?.usage) { usage = ev.usage }
       }
     }
 
@@ -639,11 +642,10 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
 
   private processResponsesEvent(
     event: string, data: string,
-    usage: { promptTokens: number; completionTokens: number; totalTokens: number },
     fullContent: string,
     toolCalls: Map<string, { id: string; name: string; arguments: string }>,
     pending: { pendingToolId: string; pendingToolName: string; pendingToolArgs: string; toolCallIdx: number },
-  ): { delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number } } | null {
+  ): { delta?: string; toolDelta?: LLMStreamEvent; id?: string; pendingState?: { id: string; name: string; args: string; idx: number }; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } } | null {
     if (!event || !data) return null
     try {
       const d = JSON.parse(data)
@@ -678,10 +680,11 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       } else if (event === 'response.completed') {
         const resp = d.response || d
         const ud = resp.usage || d.copilot_usage || {}
+        let usageUpdate: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
         if (ud.input_tokens !== undefined) {
-          usage.promptTokens = ud.input_tokens
-          usage.completionTokens = ud.output_tokens ?? 0
-          usage.totalTokens = usage.promptTokens + usage.completionTokens
+          const pt = ud.input_tokens
+          const ct = ud.output_tokens ?? 0
+          usageUpdate = { promptTokens: pt, completionTokens: ct, totalTokens: pt + ct }
         } else if (ud.token_details) {
           const tokens = ud.token_details || []
           let pt = 0; let ct = 0
@@ -689,7 +692,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
             if (t.token_type === 'input' || t.token_type === 'prompt') pt += t.token_count || 0
             if (t.token_type === 'output' || t.token_type === 'completion') ct += t.token_count || 0
           }
-          usage.promptTokens = pt; usage.completionTokens = ct; usage.totalTokens = pt + ct
+          usageUpdate = { promptTokens: pt, completionTokens: ct, totalTokens: pt + ct }
         }
         if (!fullContent && resp.output && Array.isArray(resp.output)) {
           const texts: string[] = []
@@ -700,8 +703,9 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
               }
             }
           }
-          if (texts.length > 0) return { delta: texts.join('') }
+          if (texts.length > 0) return { delta: texts.join(''), ...(usageUpdate && { usage: usageUpdate }) }
         }
+        if (usageUpdate) return { usage: usageUpdate }
       }
     } catch {}
     return null

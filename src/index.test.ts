@@ -623,6 +623,56 @@ describe('GitHubCopilotTransportAdapter — items from spec', () => {
     expect(doneEvent.response.finishReason).toBe('tool_calls')
   })
 
+  // Criterion 4: No duplicate tool calls — output_item.added without id, output_item.done with id
+  it('P1: streamResponses deduplicates tool calls when added has no id and done has one', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          // added without item.id, done with item.id — previously created 2 Map entries
+          controller.enqueue(encoder.encode(
+            'event: response.created\ndata: {"response":{"id":"resp-dedup"}}\n\n' +
+            'event: response.output_item.added\ndata: {"item":{"type":"function_call","name":"get_weather"}}\n\n' +
+            'event: response.function_call_arguments.delta\ndata: {"delta":"{\\"city\\":\\"Paris\\"}"}\n\n' +
+            'event: response.output_item.done\ndata: {"item":{"id":"fc1","type":"function_call","name":"get_weather","arguments":"{\\"city\\":\\"Paris\\"}"}}\n\n' +
+            'event: response.completed\ndata: {"response":{"id":"resp-dedup","usage":{"input_tokens":5,"output_tokens":10}}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal, model: 'gpt-5.4-mini' } as any
+    const request = {
+      messages: [{ role: 'user', content: 'weather in Paris?' }],
+      tools: [
+        {
+          type: 'function' as const,
+          function: { name: 'get_weather', description: 'Get weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } },
+        },
+      ],
+      toolChoice: 'auto' as const,
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent).toBeDefined()
+    expect(doneEvent.response.toolCalls).toBeDefined()
+    // Must be exactly 1, not 2 duplicate tool calls
+    expect(doneEvent.response.toolCalls.length).toBe(1)
+    expect(doneEvent.response.toolCalls[0].name).toBe('get_weather')
+    expect(doneEvent.response.toolCalls[0].arguments).toEqual({ city: 'Paris' })
+    expect(doneEvent.response.toolCalls[0].id).toBe('fc1')
+  })
+
   // Criterion 3: Chat completions — tool_call_delta streaming
   it('P1: streamChatCompletions yields tool_call_delta events', async () => {
     mockAuth.getAccessContext.mockResolvedValue({

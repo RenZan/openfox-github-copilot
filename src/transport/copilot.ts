@@ -658,13 +658,10 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         if (item.type === 'function_call') {
           const id = item.id || `tc-${pending.toolCallIdx}`
           const name = item.name || ''
-          toolCalls.set(id, { id, name, arguments: '' })
           return { pendingState: { id, name, args: '', idx: pending.toolCallIdx } }
         }
       } else if (event === 'response.function_call_arguments.delta') {
         if (d.delta) {
-          const existing = toolCalls.get(pending.pendingToolId)
-          if (existing) existing.arguments += d.delta
           return {
             toolDelta: { type: 'tool_call_delta' as const, index: pending.toolCallIdx, arguments: d.delta },
             pendingState: { id: pending.pendingToolId, name: pending.pendingToolName, args: pending.pendingToolArgs + d.delta, idx: pending.toolCallIdx },

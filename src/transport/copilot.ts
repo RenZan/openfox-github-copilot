@@ -484,19 +484,21 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     access: ProviderAccessContext,
     model: string,
   ): AsyncIterable<LLMStreamEvent> {
+    const input: any[] = []
+    for (const m of request.messages) {
+      if (m.role === 'assistant' && !m.content && m.toolCalls?.length) continue
+      if (m.role === 'tool') {
+        input.push({ type: 'function_call_output', call_id: m.toolCallId, output: m.content || '' })
+      } else {
+        const msg: any = { role: m.role, content: m.content === '' ? '' : m.content }
+        if (m.name) msg.name = m.name
+        input.push(msg)
+      }
+    }
+
     const body: Record<string, unknown> = {
       model,
-      input: request.messages.filter((m) => {
-        if (m.role === 'assistant' && !m.content && m.toolCalls?.length) return false
-        return true
-      }).map((m) => {
-        const msg: Record<string, unknown> = {
-          role: m.role === 'tool' ? 'user' : m.role,
-          content: m.content === '' ? '' : m.content,
-        }
-        if (m.name) msg.name = m.name
-        return msg
-      }),
+      input,
       max_output_tokens: request.maxTokens ?? 100000,
       stream: true,
     }

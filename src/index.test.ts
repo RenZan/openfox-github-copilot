@@ -419,7 +419,7 @@ describe('GitHubCopilotTransportAdapter — items from spec', () => {
   })
 
   // P1: Multi-turn tool calls /responses — tool responses sent as user role, tool_calls omitted
-  it('P1: streamResponses sends tool responses as user role and filters empty assistant tool-call msgs', async () => {
+  it('P1: streamResponses sends tool responses as function_call_output items', async () => {
     mockAuth.getAccessContext.mockResolvedValue({
       headers: { Authorization: 'Bearer test-copilot-token' },
     })
@@ -456,12 +456,12 @@ describe('GitHubCopilotTransportAdapter — items from spec', () => {
     expect(fetchCall).toBeDefined()
     const body = JSON.parse(fetchCall![1].body)
 
-    // Empty assistant tool-call msg filtered out
     expect(body.input.find((m: any) => m.role === 'assistant')).toBeUndefined()
 
-    // Tool result mapped to user
-    const toolMsg = body.input.find((m: any) => (m.role === 'user' && m.content === '20°C'))
-    expect(toolMsg).toBeDefined()
+    const toolItem = body.input.find((m: any) => m.type === 'function_call_output')
+    expect(toolItem).toBeDefined()
+    expect(toolItem.call_id).toBe('tc1')
+    expect(toolItem.output).toBe('20°C')
   })
 
   // P1: Flush EOF — last event has data line with trailing \n but no \n\n (empty line)
@@ -621,5 +621,122 @@ describe('GitHubCopilotTransportAdapter — items from spec', () => {
     expect(doneEvent.response.toolCalls[0].name).toBe('get_weather')
     expect(doneEvent.response.toolCalls[0].arguments).toEqual({ city: 'Paris' })
     expect(doneEvent.response.finishReason).toBe('tool_calls')
+  })
+
+  // Criterion 3: Chat completions — tool_call_delta streaming
+  it('P1: streamChatCompletions yields tool_call_delta events', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          controller.enqueue(encoder.encode(
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":""}}]}}]}\n\n' +
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\"Paris\\"}"}}]}}]}\n\n' +
+            'data: {"choices":[{"delta":{"content":""},"finish_reason":"tool_calls"}]}\n\n' +
+            'data: [DONE]\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal } as any
+    const request = {
+      messages: [{ role: 'user', content: 'weather' }],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    expect(events.some(e => e.type === 'tool_call_delta')).toBe(true)
+    const toolDeltas = events.filter(e => e.type === 'tool_call_delta')
+    expect(toolDeltas.length).toBeGreaterThanOrEqual(2)
+
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent?.response.toolCalls).toBeDefined()
+    expect(doneEvent?.response.toolCalls[0].name).toBe('get_weather')
+    expect(doneEvent?.response.finishReason).toBe('tool_calls')
+  })
+
+  // Criterion 3: Chat completions — partial EOF without trailing \n
+  it('P1: streamChatCompletions processes last data line on EOF without \\n', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          controller.enqueue(encoder.encode(
+            'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n' +
+            'data: {"choices":[{"delta":{"content":" EOF"}}]}\n\n' +
+            'data: {"id":"resp-eof","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal } as any
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent).toBeDefined()
+    expect(doneEvent.response.content).toContain('EOF')
+    expect(doneEvent.response.usage.totalTokens).toBe(5)
+  })
+
+  // Criterion 3: Chat completions — partial EOF with fragment in buffer (no trailing \n)
+  it('P1: streamChatCompletions parses fragmented last data line without \\n at EOF', async () => {
+    mockAuth.getAccessContext.mockResolvedValue({
+      headers: { Authorization: 'Bearer test-copilot-token' },
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder()
+          // Data chunk without trailing \n — simulates TCP fragmentation
+          controller.enqueue(encoder.encode(
+            'data: {"choices":[{"delta":{"content":"first"}}]}\n\n' +
+            'data: {"choices":[{"delta":{"content":" chunk"}}]}\n\n'
+          ))
+          controller.enqueue(encoder.encode(
+            'data: {"id":"resp-frag","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}\n\n'
+          ))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = { credentialRef: 'cred', signal: new AbortController().signal } as any
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: new AbortController().signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    const doneEvent = events.find(e => e.type === 'done')
+    expect(doneEvent).toBeDefined()
+    expect(doneEvent.response.content).toContain('first')
+    expect(doneEvent.response.id).toBe('resp-frag')
+    expect(doneEvent.response.usage.totalTokens).toBe(4)
   })
 })

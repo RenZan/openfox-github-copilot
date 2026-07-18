@@ -132,7 +132,10 @@ export class GitHubAccountTokenClient {
     if (!res.ok) throw new Error(`Failed to fetch Copilot token: ${res.statusText} (${res.status})`)
 
     const data = (await res.json()) as GitHubCopilotTokenResponse
+    if (!data.token) throw new Error('Copilot token response is empty')
+
     const expiresAt = typeof data.expires_at === 'number' ? data.expires_at : Math.floor(new Date(data.expires_at).getTime() / 1000)
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0) throw new Error('Copilot token has invalid expiration')
 
     return { token: data.token, expiresAt }
   }
@@ -170,9 +173,10 @@ export class GitHubAccountTokenClient {
     return this.refreshCopilotToken(reference)
   }
 
-  async invalidateCopilotToken(reference: string): Promise<void> {
+  async invalidateCopilotToken(reference: string, currentToken?: string): Promise<void> {
     const credential = (await this.credentials.get(reference)) as GitHubCopilotCredential | undefined
     if (!credential) return
+    if (currentToken !== undefined && credential.copilotToken !== currentToken) return
     credential.copilotToken = undefined
     credential.copilotExpiresAt = undefined
     await this.credentials.set(reference, credential)

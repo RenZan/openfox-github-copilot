@@ -18,13 +18,20 @@ export class GitHubCopilotAuthAdapter implements ProviderAuthAdapter {
     challenge: ProviderLoginChallenge
     completion: Promise<{ credentialRef: string }>
   }>()
-  readonly tokens: GitHubAccountTokenClient
+  private readonly tokens: GitHubAccountTokenClient
+  private readonly nowSec: () => number
 
   constructor(
     private readonly credentials: ProviderCredentialStore,
     options: GitHubCopilotAuthOptions = {},
   ) {
+    const now = options.now ?? Date.now
     this.tokens = new GitHubAccountTokenClient(credentials, options)
+    this.nowSec = () => now() / 1000
+  }
+
+  async refreshCopilotToken(credentialRef: string): Promise<void> {
+    await this.tokens.refreshCopilotToken(credentialRef)
   }
 
   async beginLogin(context: { providerId: string }): Promise<{
@@ -70,8 +77,7 @@ export class GitHubCopilotAuthAdapter implements ProviderAuthAdapter {
     const raw = await this.credentials.get(context.credentialRef) as { username?: string; oauthToken?: string; copilotToken?: string; copilotExpiresAt?: number } | undefined
     if (!raw) return { state: 'disconnected' }
 
-    const nowSec = this.tokens.getNowSec()
-    if (raw.copilotToken && raw.copilotExpiresAt && raw.copilotExpiresAt > nowSec) {
+    if (raw.copilotToken && raw.copilotExpiresAt && raw.copilotExpiresAt > this.nowSec()) {
       return { state: 'connected', accountLabel: raw.username }
     }
 

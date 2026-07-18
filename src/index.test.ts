@@ -943,18 +943,12 @@ describe('GitHubCopilotTransportAdapter.stream retry', () => {
   let adapter: GitHubCopilotTransportAdapter
 
   function mockAuth(overrides = {}) {
-    const tokens = {
-      refreshCopilotToken: vi.fn().mockRejectedValue(new Error('no token')),
-      invalidateCopilotToken: vi.fn(),
-      getValidCredential: vi.fn(),
-      fetchCopilotToken: vi.fn(),
-    }
     return {
       getAccessContext: vi.fn(),
       getOAuthToken: vi.fn(),
       credentials: { get: vi.fn() },
       id: 'github-copilot-auth',
-      tokens,
+      refreshCopilotToken: vi.fn().mockRejectedValue(new Error('no token')),
       invalidateCopilotToken: vi.fn(),
       ...overrides,
     }
@@ -962,7 +956,7 @@ describe('GitHubCopilotTransportAdapter.stream retry', () => {
 
   it('retries on 400 auth error and succeeds on retry', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined)
-    const auth = mockAuth({ tokens: { refreshCopilotToken: refresh, invalidateCopilotToken: vi.fn(), getValidCredential: vi.fn(), fetchCopilotToken: vi.fn() } })
+    const auth = mockAuth({ refreshCopilotToken: refresh })
     auth.getAccessContext
       .mockResolvedValueOnce({ headers: { Authorization: 'Bearer old-tok' } })
       .mockResolvedValueOnce({ headers: { Authorization: 'Bearer new-tok' } })
@@ -1000,9 +994,85 @@ describe('GitHubCopilotTransportAdapter.stream retry', () => {
     expect(events.some(e => e.type === 'text_delta' && e.content === 'retried')).toBe(true)
   })
 
+  it('retries on 401 auth error and succeeds on retry', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const auth = mockAuth({ refreshCopilotToken: refresh })
+    auth.getAccessContext
+      .mockResolvedValueOnce({ headers: { Authorization: 'Bearer old-tok' } })
+      .mockResolvedValueOnce({ headers: { Authorization: 'Bearer new-tok' } })
+    adapter = new GitHubCopilotTransportAdapter(auth as any)
+
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => 'unauthorized',
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"retried-401"}}]}\n\n'))
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = makeContext('cred')
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: ctx.signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(events.some(e => e.type === 'text_delta' && e.content === 'retried-401')).toBe(true)
+  })
+
+  it('retries on 403 auth error and succeeds on retry', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const auth = mockAuth({ refreshCopilotToken: refresh })
+    auth.getAccessContext
+      .mockResolvedValueOnce({ headers: { Authorization: 'Bearer old-tok' } })
+      .mockResolvedValueOnce({ headers: { Authorization: 'Bearer new-tok' } })
+    adapter = new GitHubCopilotTransportAdapter(auth as any)
+
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      text: async () => 'forbidden',
+    })
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"retried-403"}}]}\n\n'))
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }),
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+    })
+
+    const ctx = makeContext('cred')
+    const request = {
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: ctx.signal,
+    } as any
+    const events: any[] = []
+    for await (const ev of adapter.stream(request, ctx)) {
+      events.push(ev)
+    }
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(events.some(e => e.type === 'text_delta' && e.content === 'retried-403')).toBe(true)
+  })
+
   it('does not retry on 404 (non-auth error)', async () => {
     const refresh = vi.fn()
-    const auth = mockAuth({ tokens: { refreshCopilotToken: refresh, invalidateCopilotToken: vi.fn(), getValidCredential: vi.fn(), fetchCopilotToken: vi.fn() } })
+    const auth = mockAuth({ refreshCopilotToken: refresh })
     auth.getAccessContext.mockResolvedValueOnce({ headers: { Authorization: 'Bearer tok' } })
     adapter = new GitHubCopilotTransportAdapter(auth as any)
 
@@ -1027,7 +1097,7 @@ describe('GitHubCopilotTransportAdapter.stream retry', () => {
 
   it('does not retry on 400 with payload error (not auth)', async () => {
     const refresh = vi.fn()
-    const auth = mockAuth({ tokens: { refreshCopilotToken: refresh, invalidateCopilotToken: vi.fn(), getValidCredential: vi.fn(), fetchCopilotToken: vi.fn() } })
+    const auth = mockAuth({ refreshCopilotToken: refresh })
     auth.getAccessContext.mockResolvedValueOnce({ headers: { Authorization: 'Bearer tok' } })
     adapter = new GitHubCopilotTransportAdapter(auth as any)
 
@@ -1052,7 +1122,7 @@ describe('GitHubCopilotTransportAdapter.stream retry', () => {
 
   it('passes through on first success without refresh', async () => {
     const refresh = vi.fn()
-    const auth = mockAuth({ tokens: { refreshCopilotToken: refresh, invalidateCopilotToken: vi.fn(), getValidCredential: vi.fn(), fetchCopilotToken: vi.fn() } })
+    const auth = mockAuth({ refreshCopilotToken: refresh })
     auth.getAccessContext.mockResolvedValueOnce({ headers: { Authorization: 'Bearer tok' } })
     adapter = new GitHubCopilotTransportAdapter(auth as any)
 

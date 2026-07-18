@@ -24,14 +24,6 @@ function isAuthHttpError(error: string): boolean {
   return /token|auth|credential|unauthorized|forbidden|expired/i.test(body)
 }
 
-function isAuthNetworkError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  const msg = error.message
-  if (/\b401\b|\b403\b/.test(msg)) return true
-  if (/token.*expir|expir.*token|auth.*fail|unauthorized|invalid.*token/.test(msg)) return true
-  return false
-}
-
 function signalMerge(...signals: (AbortSignal | undefined)[]): AbortSignal {
   const valid = signals.filter(Boolean) as AbortSignal[]
   if (valid.length === 0) return new AbortController().signal
@@ -228,7 +220,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           return
         }
         try {
-          await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+          await this.auth.refreshCopilotToken(context.credentialRef)
         } catch {
           yield { type: 'error', error: 'Failed to refresh GitHub Copilot token' }
           return
@@ -247,7 +239,7 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
             shouldRetry = true
             retrySignal.abort()
             try {
-              await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+              await this.auth.refreshCopilotToken(context.credentialRef)
             } catch {
               yield { type: 'error', error: 'Failed to refresh GitHub Copilot token' }
               return
@@ -257,17 +249,6 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           yield event
         }
       } catch (error: any) {
-        if (attempt === 1 && isAuthNetworkError(error)) {
-          shouldRetry = true
-          retrySignal.abort()
-          try {
-            await this.auth.tokens.refreshCopilotToken(context.credentialRef)
-          } catch {
-            yield { type: 'error', error: 'Failed to refresh GitHub Copilot token' }
-            return
-          }
-          continue
-        }
         if (request.signal?.aborted) {
           yield { type: 'error', error: 'Request aborted' }
           return

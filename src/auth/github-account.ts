@@ -42,6 +42,7 @@ export class GitHubAccountTokenClient {
   private readonly refreshMarginSeconds: number
   private readonly refreshes = new Map<string, Promise<GitHubCopilotCredential>>()
   private readonly clientId = 'Iv1.b507a08c87ecfe98'
+  readonly getNowSec: () => number
 
   constructor(
     private readonly credentials: ProviderCredentialStore,
@@ -50,6 +51,7 @@ export class GitHubAccountTokenClient {
     this.request = options.fetcher ?? fetch
     this.now = options.now ?? Date.now
     this.refreshMarginSeconds = options.refreshMarginSeconds ?? 300
+    this.getNowSec = () => this.now() / 1000
   }
 
   async beginDeviceLogin(): Promise<{

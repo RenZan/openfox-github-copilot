@@ -67,8 +67,13 @@ export class GitHubCopilotAuthAdapter implements ProviderAuthAdapter {
   async getStatus(context: { providerId: string; credentialRef?: string }): Promise<ProviderAuthStatus> {
     if (!context.credentialRef) return { state: 'disconnected' }
 
-    const raw = await this.credentials.get(context.credentialRef) as { username?: string } | undefined
+    const raw = await this.credentials.get(context.credentialRef) as { username?: string; oauthToken?: string; copilotToken?: string; copilotExpiresAt?: number } | undefined
     if (!raw) return { state: 'disconnected' }
+
+    const nowSec = this.tokens.getNowSec()
+    if (raw.copilotToken && raw.copilotExpiresAt && raw.copilotExpiresAt > nowSec) {
+      return { state: 'connected', accountLabel: raw.username }
+    }
 
     try {
       const credential = await this.tokens.getValidCredential(context.credentialRef)

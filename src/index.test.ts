@@ -818,8 +818,6 @@ describe('GitHubAccountTokenClient.getValidCredential', () => {
   })
 
   it('returns cached credential when within margin (copilotExpiresAt - 300s)', async () => {
-    // expiresAt = 1_000_000_000+600, now = 1_000_000_000, margin = 300
-    // isExpired = now >= expiresAt - margin = 1_000_000_000 >= 1_000_000_600 - 300 = 1_000_000_300 => false
     const cred = await client.getValidCredential(ref)
     expect(cred.copilotToken).toBe('tok')
     expect(mockFetch).not.toHaveBeenCalled()
@@ -931,6 +929,13 @@ describe('GitHubCopilotAuthAdapter.getStatus', () => {
     const status = await adapter.getStatus({ providerId: 'github-copilot', credentialRef: ref })
     expect(status.state).toBe('expired')
     expect((status as any).error).toContain('network error')
+  })
+
+  it('returns { state: "connected" } from cached token without fetch, read-only', async () => {
+    const cachedRef = await makeFakeCredential(credentials, { copilotToken: 'valid-tok', copilotExpiresAt: 1_000_000_000 + 3600 })
+    const status = await adapter.getStatus({ providerId: 'github-copilot', credentialRef: cachedRef })
+    expect(status.state).toBe('connected')
+    expect(mockFetch).not.toHaveBeenCalled()
   })
 })
 

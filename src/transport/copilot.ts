@@ -27,20 +27,20 @@ function isAuthHttpError(error: string): boolean {
 function isAuthNetworkError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const msg = error.message
-  if (/401|403/.test(msg)) return true
+  if (/\b401\b|\b403\b/.test(msg)) return true
   if (/token.*expir|expir.*token|auth.*fail|unauthorized|invalid.*token/.test(msg)) return true
   return false
 }
 
 function signalMerge(...signals: (AbortSignal | undefined)[]): AbortSignal {
+  const valid = signals.filter(Boolean) as AbortSignal[]
+  if (valid.length === 0) return new AbortController().signal
+  if (valid.length === 1) return valid[0]
+  if (typeof AbortSignal.any !== 'undefined') return AbortSignal.any(valid)
   const controller = new AbortController()
-  for (const s of signals) {
-    if (!s) continue
-    if (s.aborted) {
-      controller.abort(s.reason)
-      return controller.signal
-    }
-    s.addEventListener('abort', () => controller.abort(s!.reason), { once: true })
+  for (const s of valid) {
+    if (s.aborted) { controller.abort(s.reason); break }
+    s.addEventListener('abort', () => controller.abort(s.reason), { once: true })
   }
   return controller.signal
 }
@@ -216,9 +216,8 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
     const endpoint = this.getModelEndpoint(model)
 
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const retryController = new AbortController()
-      const retrySignal = retryController.signal
-      const combined = signalMerge(retrySignal, request.signal)
+      const retrySignal = new AbortController()
+      const combined = signalMerge(retrySignal.signal, request.signal)
 
       let access: ProviderAccessContext
       try {
@@ -228,7 +227,12 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
           yield { type: 'error', error: 'Failed to authenticate with GitHub Copilot' }
           return
         }
-        await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+        try {
+          await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+        } catch {
+          yield { type: 'error', error: 'Failed to refresh GitHub Copilot token' }
+          return
+        }
         continue
       }
 
@@ -241,8 +245,13 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
         for await (const event of streamGen) {
           if (attempt === 1 && event.type === 'error' && isAuthHttpError(event.error)) {
             shouldRetry = true
-            retryController.abort()
-            await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+            retrySignal.abort()
+            try {
+              await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+            } catch {
+              yield { type: 'error', error: 'Failed to refresh GitHub Copilot token' }
+              return
+            }
             break
           }
           yield event
@@ -250,8 +259,13 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       } catch (error: any) {
         if (attempt === 1 && isAuthNetworkError(error)) {
           shouldRetry = true
-          retryController.abort()
-          await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+          retrySignal.abort()
+          try {
+            await this.auth.tokens.refreshCopilotToken(context.credentialRef)
+          } catch {
+            yield { type: 'error', error: 'Failed to refresh GitHub Copilot token' }
+            return
+          }
           continue
         }
         if (request.signal?.aborted) {

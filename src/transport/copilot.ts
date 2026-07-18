@@ -17,6 +17,10 @@ const GITHUB_CATALOG_API = 'https://models.github.ai/catalog/models'
 
 const LOOKAROUND_RE = /\(\?[=!]|\(\?<[=!]/
 
+function isAuthHttpError(error: string): boolean {
+  return / \(40[013]\):/.test(error)
+}
+
 function sanitizeSchema(obj: unknown): unknown {
   if (Array.isArray(obj)) return obj.map(sanitizeSchema)
   if (obj && typeof obj === 'object') {
@@ -184,18 +188,36 @@ export class GitHubCopilotTransportAdapter implements ProviderTransportAdapter {
       return
     }
 
-    try {
-      const access = await this.auth.getAccessContext(context.credentialRef)
-      const model = context.model || 'gpt-5-mini'
-      const endpoint = this.getModelEndpoint(model)
+    const model = context.model || 'gpt-5-mini'
+    const endpoint = this.getModelEndpoint(model)
 
-      if (endpoint === '/responses') {
-        yield* this.streamResponses(request, access, model)
-      } else {
-        yield* this.streamChatCompletions(request, access, model, request.signal)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let access: ProviderAccessContext
+      try {
+        access = await this.auth.getAccessContext(context.credentialRef)
+      } catch {
+        if (attempt === 2) {
+          yield { type: 'error', error: 'Failed to authenticate with GitHub Copilot' }
+          return
+        }
+        await this.auth.invalidateCopilotToken(context.credentialRef)
+        continue
       }
-    } catch (error: any) {
-      yield { type: 'error', error: error.message || String(error) }
+
+      const streamGen = endpoint === '/responses'
+        ? this.streamResponses(request, access, model)
+        : this.streamChatCompletions(request, access, model, request.signal)
+
+      let shouldRetry = false
+      for await (const event of streamGen) {
+        if (attempt === 1 && event.type === 'error' && isAuthHttpError(event.error)) {
+          shouldRetry = true
+          await this.auth.invalidateCopilotToken(context.credentialRef)
+          break
+        }
+        yield event
+      }
+      if (!shouldRetry) return
     }
   }
 
